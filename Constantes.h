@@ -16,6 +16,7 @@ const char* MSG_PARADO        = "status stopped";
 const char* MSG_ONLINE        = "ONLINE";
 const char* MSG_OFFLINE       = "OFFLINE";
 const char* MSG_ERROR_LIMITE  = "status error_limite";
+const char* MSG_ERROR_ATASCO  = "status error_encoder"; 
 
 // Prefijo para la posición (ej: "pos 50")
 const char* PREFIJO_POS       = "pos "; 

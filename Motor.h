@@ -66,6 +66,15 @@ class Motor {
     unsigned long lastEncTimeStop = 0;  
     const int TIEMPO_ESTABILIZACION = 300; 
 
+    // Error Encoder
+    bool errorAtasco = false;         // bandera de error
+    long lastPosCheck = 0;            // Última posición conocida para chequeo
+    unsigned long lastMoveTime = 0;   // Última vez que vimos que se movía
+    
+    // Configuración de sensibilidad
+    const int TIEMPO_GRACIA_ARRANQUE = 1000; // Damos 1s al arrancar para vencer inercia
+    const int TIEMPO_MAX_SIN_PULSOS = 1500;  // Si en 1.5s no cambia el número -> ERROR
+
     // Logger
     typedef std::function<void(String)> LogCallback;
     LogCallback externalLog = nullptr;
@@ -111,11 +120,56 @@ class Motor {
        }
     }
 
+    // --- WATCHDOG DE ENCODER (Detección de Atasco / Rotura) ---
+    void verificarAtasco() {
+       // Solo vigilamos si:
+       // 1. El motor debería estar moviéndose (tiene corriente).
+       // 2. NO es modo tiempo (ahí no hay encoder).
+       // 3. NO estamos calibrando (ahí puede haber movimientos raros manuales).
+       if (!motorEnMovimiento || modoTiempo || calibrando) return;
+
+       // 1. GRACIA DE ARRANQUE:
+       if (millis() - tiempoInicioMovimiento < TIEMPO_GRACIA_ARRANQUE) {
+           lastMoveTime = millis(); 
+           lastPosCheck = enc.getCount();
+           return;
+       }
+
+       long posActual = enc.getCount();
+
+       // 2. COMPROBACIÓN:
+       if (abs(posActual - lastPosCheck) > 2) {
+           // SÍ se mueve: Todo bien.
+           lastMoveTime = millis();
+           lastPosCheck = posActual;
+       }
+       else {
+           // NO se mueve. ¿Cuánto tiempo lleva así?
+           if (millis() - lastMoveTime > TIEMPO_MAX_SIN_PULSOS) {
+               debug("!!! ERROR FATAL: ENCODER NO RESPONDE (Posible rotura o atasco) !!!");
+               parar();
+               errorAtasco = true; // Activamos alarma
+               
+               // --- DESCALIBRACIÓN FORZOSA DE SEGURIDAD ---
+               // Como no sabemos cuánto se ha movido realmente el motor sin contar pulsos,
+               // la posición actual es BASURA. Obligamos a recalibrar.
+               
+               pulsos100 = 0;              // Borramos el límite máximo en RAM
+               prefs.putLong("pulsos100", 0); // Borramos el límite en Memoria Flash
+               
+               // Opcional: También podrías borrar la posición actual si quieres ser drástico
+               // enc.clearCount(); 
+               
+               debug(">> SEGURIDAD: Sistema marcado como NO CALIBRADO. Se requiere Homing.");
+           }
+       }
+    }
+
     void gestionarLuces() {
       unsigned long now = millis();
       if (now - lastBlinkTime > 300) { blinkState = !blinkState; lastBlinkTime = now; }
 
-      if (enEmergencia || errorLimite) { // Rojo parpadeando en fallo
+      if (enEmergencia || errorLimite || errorAtasco) { // Rojo parpadeando en fallo
         digitalWrite(pinRojo, blinkState); digitalWrite(pinVerde, LOW); digitalWrite(pinNaranja, LOW); return;
       }
       if (mostrandoExito) {
@@ -151,10 +205,11 @@ class Motor {
           enEmergencia = false;
           // REARME DEL ERROR DE LÍMITE
              // Si había un error de software, al soltar la seta lo limpiamos.
-          if (errorLimite) {
-              errorLimite = false;
-              debug(">> REARME DE SISTEMA: Error de límite limpiado.");
-          }
+          if (errorLimite || errorAtasco) { 
+                 errorLimite = false;
+                 errorAtasco = false;         
+                 debug(">> REARME: Errores limpiados.");
+             }
         } 
       }
 
@@ -169,7 +224,7 @@ class Motor {
       }
       lastBtnCalib = btnCal;
 
-      if (calibrando || modoTiempo) {
+      if (calibrando || modoTiempo || errorAtasco) {
          if (btnA) abrirManual();
          else if (btnC) cerrarManual();
          else {
@@ -271,6 +326,7 @@ class Motor {
       
       // Chequeo constante de límites
       verificarLimitesSeguridad(); 
+      verificarAtasco();
 
       if (esperandoParadaReal && !modoTiempo) {
           long lecturaActual = enc.getCount();
@@ -288,7 +344,7 @@ class Motor {
       }
 
       // Si hay cualquier error o parada, no ejecutamos lógica de movimiento automático
-      if (!motorEnMovimiento || calibrando || enEmergencia || errorLimite) return;
+      if (!motorEnMovimiento || calibrando || enEmergencia || errorLimite || errorAtasco ) return;
 
       if (modoTiempo && moviendoAutomatico) {
         unsigned long delta = millis() - tiempoInicioMovimiento;
@@ -358,9 +414,9 @@ class Motor {
       motorEnMovimiento = true; sentidoGiro = -1; 
     }
 
-    void moverA(int porcentaje) {
+    /*void moverA(int porcentaje) {
        esperandoParadaReal = false;
-       if(modoTiempo || calibrando || enEmergencia || errorLimite) { // BLOQUEO
+       if(modoTiempo || calibrando || enEmergencia || errorLimite || errorAtasco) { 
            debug("Accion rechazada (Error o Estado)."); return;
        }
        //long porcentajeLim = constrain(porcentaje, 0, 100);
@@ -379,12 +435,55 @@ class Motor {
            digitalWrite(pinAbrir, HIGH); digitalWrite(pinCerrar, LOW); 
            motorEnMovimiento = true; sentidoGiro = 1; moviendoAutomatico = true; 
        }
+    }*/
+    void moverA(int porcentaje) {
+       esperandoParadaReal = false;
+       
+       // 1. CHEQUEO DE BLOQUEOS
+       if(modoTiempo || calibrando || enEmergencia || errorLimite || errorAtasco) { 
+           debug("Accion rechazada (Error o Estado)."); return;
+       }
+       
+       long porcentajeLim = porcentaje; // (Si quieres limitar usa constrain aquí)
+       pulsosObjetivo = (pulsos100 * porcentajeLim) / 100;
+       long pulsosActuales = enc.getCount();
+
+       // 2. CORRECCIÓN "ZONA MUERTA" (El problema del 0.3% -> 0%)
+       // Si la distancia al objetivo es menor que la anticipación, el motor 
+       // arrancaría y pararía en 1 milisegundo (malo para el relé).
+       // Lo mejor es considerar que YA hemos llegado.
+       long distancia = abs(pulsosObjetivo - pulsosActuales);
+       if (distancia <= pulsosAnticipacion) {
+           debug(">> Mando ignorado: Ya estamos en la zona de destino (Diferencia < Anticipacion).");
+           return; 
+       }
+
+       debug("Auto a: " + String(porcentajeLim) + "%");
+       
+       // 3. ¡¡¡ BUG FIX CRÍTICO !!! REINICIAR WATCHDOG
+       // Sin esto, verificarAtasco() cree que llevamos horas intentando movernos
+       tiempoInicioMovimiento = millis(); 
+       lastMoveTime = millis();
+       lastPosCheck = pulsosActuales;
+
+       // 4. DECIDIR DIRECCIÓN Y ARRANCAR
+       if (pulsosActuales < pulsosObjetivo) { 
+           buscandoBajar = false; 
+           digitalWrite(pinAbrir, LOW); digitalWrite(pinCerrar, HIGH); 
+           motorEnMovimiento = true; sentidoGiro = -1; moviendoAutomatico = true; 
+       } 
+       else if (pulsosActuales > pulsosObjetivo) { 
+           buscandoBajar = true; 
+           digitalWrite(pinAbrir, HIGH); digitalWrite(pinCerrar, LOW); 
+           motorEnMovimiento = true; sentidoGiro = 1; moviendoAutomatico = true; 
+       }
     }
 
     // --- ACCIONES MANUALES (RESETEAN ERROR) ---
     void abrirManual() {
       esperandoParadaReal = false;
       errorLimite = false; // REARME MANUAL
+      errorAtasco = false;
       
       if (enEmergencia) return;
       if (calibrando && modoTiempo && esperandoInicio) {
@@ -398,6 +497,7 @@ class Motor {
     void cerrarManual() {
       esperandoParadaReal = false;
       errorLimite = false; // REARME MANUAL
+      errorAtasco = false;
       
       if (enEmergencia) return;
       if (calibrando && modoTiempo && esperandoInicio) {
@@ -466,6 +566,19 @@ class Motor {
        calibrando = false; pasoCalibracion = 0; mostrandoExito = true; finCalibracionTime = millis(); 
        debug("FIN CALIBRACIÓN."); 
     }
+
+    bool estaCalibrando() { 
+        return calibrando; 
+    }
+
+    bool estaCalibrado() {
+        if (modoTiempo) return (tiempoTotalRecorrido > 0);
+        else return (pulsos100 != 0);
+    }
+    
+    bool esModoTiempo() {
+        return modoTiempo;
+    }
     
     DatosMotor getPosicionActual() {
       DatosMotor datos;
@@ -477,6 +590,7 @@ class Motor {
     String getEstadoString() {
       if (enEmergencia) return MSG_EMERGENCIA;
       if (errorLimite)  return MSG_ERROR_LIMITE; // Aviso de límite superado
+      if (errorAtasco)  return MSG_ERROR_ATASCO;
 
       bool calibrado = (modoTiempo && tiempoTotalRecorrido > 0) || (!modoTiempo && pulsos100 != 0);
       if (!calibrado) return MSG_NO_CALIBRADO;
