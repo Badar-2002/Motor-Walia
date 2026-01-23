@@ -91,31 +91,36 @@ class Motor {
 
        long pos = enc.getCount();
 
+       // Margen de seguridad: usamos el doble de la anticipación para dar flexibilidad
+       // Esto previene falsos errores cuando el motor está en el límite exacto
+       long margenSeguridad = pulsosAnticipacion * 2;
+
        // OPCIÓN A: Sistema de Pulsos POSITIVO (0 ... 10000)
        if (pulsos100 > 0) {
-           // Se pasó del 100% por arriba (ej: 10050)
-           if (pos > pulsos100 && sentidoGiro == 1) {
+           // Se pasó del 100% por arriba REALMENTE (con margen)
+           if (pos > (pulsos100 + margenSeguridad) && sentidoGiro == 1) {
                debug("!!! ERROR: Limite Superior (+) !!!");
-               parar(); errorLimite = true; 
+               parar(); errorLimite = true;
            }
-           // Se bajó del 0% (ej: -10)
-           if (pos < 0 && sentidoGiro == -1) {
+           // Se bajó del 0% REALMENTE (con margen)
+           if (pos < (0 - margenSeguridad) && sentidoGiro == -1) {
                debug("!!! ERROR: Limite Inferior (+) !!!");
-               parar(); errorLimite = true; 
+               parar(); errorLimite = true;
            }
        }
        // OPCIÓN B: Sistema de Pulsos NEGATIVO (0 ... -19000) -> TU CASO
        else {
-           // Se pasó del 100% por "abajo" (ej: -20000 es menor que -19000)
+           // Se pasó del 100% por "abajo" REALMENTE (ej: -20000 es menor que -19000)
            // Nota: Al ser negativo, "mayor recorrido" es un número "menor"
-           if (pos < pulsos100 && sentidoGiro == 1) {
-               debug("!!! ERROR: Limite Superior (-) !!!");
-               parar(); errorLimite = true; 
+           // Con margen: solo error si pos < (pulsos100 - margenSeguridad)
+           if (pos < (pulsos100 - margenSeguridad) && sentidoGiro == 1) {
+               debug("!!! ERROR: Limite Superior (-) - Exceso: " + String(abs(pos - pulsos100)) + " pulsos !!!");
+               parar(); errorLimite = true;
            }
-           // Se pasó del 0% hacia positivos (ej: 10 es mayor que 0)
-           if (pos > 0 && sentidoGiro == -1) {
-               debug("!!! ERROR: Limite Inferior (-) !!!");
-               parar(); errorLimite = true; 
+           // Se pasó del 0% hacia positivos REALMENTE (con margen)
+           if (pos > (0 + margenSeguridad) && sentidoGiro == -1) {
+               debug("!!! ERROR: Limite Inferior (-) - Exceso: " + String(abs(pos)) + " pulsos !!!");
+               parar(); errorLimite = true;
            }
        }
     }
@@ -199,18 +204,25 @@ class Motor {
       if (digitalRead(pinSeta) == LOW) {
          if (!enEmergencia) { debug("!!! EMERGENCIA !!!"); parar(); enEmergencia = true; }
          return; 
-      } else { 
-        if (enEmergencia) { 
-          debug("Emergencia OFF."); 
+      } else {
+        if (enEmergencia) {
+          debug("Emergencia OFF.");
           enEmergencia = false;
           // REARME DEL ERROR DE LÍMITE
              // Si había un error de software, al soltar la seta lo limpiamos.
-          if (errorLimite || errorAtasco) { 
+          if (errorLimite || errorAtasco) {
                  errorLimite = false;
-                 errorAtasco = false;         
-                 debug(">> REARME: Errores limpiados.");
+                 errorAtasco = false;
+
+                 // SOLUCION: Resetear estado de calibración para que el botón funcione correctamente
+                 calibrando = false;
+                 pasoCalibracion = 0;
+                 midiendoTiempo = false;
+                 esperandoInicio = false;
+
+                 debug(">> REARME: Errores y calibracion limpiados.");
              }
-        } 
+        }
       }
 
       bool btnA = digitalRead(pinBtnAbrir);
@@ -553,12 +565,34 @@ class Motor {
           enc.clearCount(); prefs.putLong("posEnc", 0); debug(">> Punto 0 FIJADO (Encoder)."); 
        }
     }
-    void set100() { 
+    void set100() {
        if (!calibrando) return;
-       if (!modoTiempo) { 
-          pulsos100 = enc.getCount(); prefs.putLong("pulsos100", pulsos100); debug(">> 100% FIJADO: " + String(pulsos100)); 
-       } else { 
-          prefs.putULong("timeTotal", tiempoTotalRecorrido); debug(">> 100% FIJADO: " + String(tiempoTotalRecorrido) + " ms"); 
+
+       // SOLUCION ERROR 1 y 2: Si el motor está en movimiento durante la calibración, pararlo primero
+       if (motorEnMovimiento) {
+          if (modoTiempo && midiendoTiempo) {
+             // En modo tiempo: calcular el tiempo total antes de parar
+             tiempoTotalRecorrido = millis() - tiempoInicioMovimiento;
+             posicionActualTiempo = tiempoTotalRecorrido;
+             midiendoTiempo = false;
+          }
+          // Parar el motor físicamente
+          digitalWrite(pinAbrir, LOW);
+          digitalWrite(pinCerrar, LOW);
+          motorEnMovimiento = false;
+          moviendoAutomatico = false;
+          sentidoGiro = 0;
+          debug(">> Motor detenido para fijar 100%");
+       }
+
+       // Ahora sí, fijar el punto 100% según el modo
+       if (!modoTiempo) {
+          pulsos100 = enc.getCount();
+          prefs.putLong("pulsos100", pulsos100);
+          debug(">> 100% FIJADO: " + String(pulsos100));
+       } else {
+          prefs.putULong("timeTotal", tiempoTotalRecorrido);
+          debug(">> 100% FIJADO: " + String(tiempoTotalRecorrido) + " ms");
        }
     }
     void finCalibrado() { 
