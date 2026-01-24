@@ -26,7 +26,8 @@ class Motor {
     // --- ESTADO INTERNO ---
     bool modoTiempo = false;           
     bool motorEnMovimiento = false;
-    int sentidoGiro = 0;          
+    int sentidoGiro = 0;     
+    bool requestMqttUpdate = false;     
 
     // Variables Encoder/Tiempo
     long pulsos100 = 0;           
@@ -85,42 +86,76 @@ class Motor {
     }
 
     // --- VERIFICACIÓN DE LÍMITES (Modo Encoder) ---
+    /*void verificarLimitesSeguridad() {
+       if (calibrando || modoTiempo) return;
+       if (!motorEnMovimiento) return;
+
+       long pos = enc.getCount();
+
+       // OPCIÓN A: Sistema de Pulsos POSITIVO (0 ... 10000)
+       if (pulsos100 < 0) {
+           // Se pasó del 100% por arriba (ej: 10050)
+           if (pos > pulsos100 && sentidoGiro == 1) {
+               debug("!!! ERROR: Limite Superior (+) !!!");
+               parar(); errorLimite = true; 
+           }
+           // Se bajó del 0% (ej: -10)
+           if (pos < 0 && sentidoGiro == -1) {
+               debug("!!! ERROR: Limite Inferior (+) !!!");
+               parar(); errorLimite = true; 
+           }
+       }
+       // OPCIÓN B: Sistema de Pulsos NEGATIVO (0 ... -19000) -> TU CASO
+       else {
+           // Se pasó del 100% por "abajo" (ej: -20000 es menor que -19000)
+           // Nota: Al ser negativo, "mayor recorrido" es un número "menor"
+           if (pos < pulsos100 && sentidoGiro == 1) {
+               debug("!!! ERROR: Limite Superior (-) !!!");
+               parar(); errorLimite = true; 
+           }
+           // Se pasó del 0% hacia positivos (ej: 10 es mayor que 0)
+           if (pos > 0 && sentidoGiro == -1) {
+               debug("!!! ERROR: Limite Inferior (-) !!!");
+               parar(); errorLimite = true; 
+           }
+       }
+    }*/
+    // --- VERIFICACIÓN DE LÍMITES (Modo Encoder) ---
     void verificarLimitesSeguridad() {
        if (calibrando || modoTiempo) return;
        if (!motorEnMovimiento) return;
 
        long pos = enc.getCount();
 
-       // Margen de seguridad: usamos el doble de la anticipación para dar flexibilidad
-       // Esto previene falsos errores cuando el motor está en el límite exacto
-       long margenSeguridad = pulsosAnticipacion * 2;
-
        // OPCIÓN A: Sistema de Pulsos POSITIVO (0 ... 10000)
        if (pulsos100 > 0) {
-           // Se pasó del 100% por arriba REALMENTE (con margen)
-           if (pos > (pulsos100 + margenSeguridad) && sentidoGiro == 1) {
+           // Se pasó del 100% por arriba y sigue subiendo
+           if (pos > pulsos100 && sentidoGiro == 1) {
                debug("!!! ERROR: Limite Superior (+) !!!");
-               parar(); errorLimite = true;
+               parar(); errorLimite = true; 
            }
-           // Se bajó del 0% REALMENTE (con margen)
-           if (pos < (0 - margenSeguridad) && sentidoGiro == -1) {
+           // Se bajó del 0% y sigue bajando
+           if (pos < 0 && sentidoGiro == -1) {
                debug("!!! ERROR: Limite Inferior (+) !!!");
-               parar(); errorLimite = true;
+               parar(); errorLimite = true; 
            }
        }
        // OPCIÓN B: Sistema de Pulsos NEGATIVO (0 ... -19000) -> TU CASO
        else {
-           // Se pasó del 100% por "abajo" REALMENTE (ej: -20000 es menor que -19000)
-           // Nota: Al ser negativo, "mayor recorrido" es un número "menor"
-           // Con margen: solo error si pos < (pulsos100 - margenSeguridad)
-           if (pos < (pulsos100 - margenSeguridad) && sentidoGiro == 1) {
-               debug("!!! ERROR: Limite Superior (-) - Exceso: " + String(abs(pos - pulsos100)) + " pulsos !!!");
-               parar(); errorLimite = true;
+           // CASO 1: Límite del 100% (El fondo del pozo, ej: -19000)
+           // Si pos es -19500 (te has pasado) y sigues bajando (-1) -> ERROR
+           // (Si subes hacia -10000, te dejo pasar)
+           if (pos < pulsos100 && sentidoGiro == -1) {
+               debug("!!! ERROR: Limite Superior (-) !!!");
+               parar(); errorLimite = true; 
            }
-           // Se pasó del 0% hacia positivos REALMENTE (con margen)
-           if (pos > (0 + margenSeguridad) && sentidoGiro == -1) {
-               debug("!!! ERROR: Limite Inferior (-) - Exceso: " + String(abs(pos)) + " pulsos !!!");
-               parar(); errorLimite = true;
+           
+           // CASO 2: Límite del 0% (El techo, 0)
+           // Si pos es +50 (te has pasado por inercia) y sigues subiendo (1) -> ERROR
+           // (Si bajas hacia -5000, te dejo pasar)
+           if (pos > 0 && sentidoGiro == 1) { 
+               debug("!!! ERROR: Limite Inferior (-) !!!");
+               parar(); errorLimite = true; 
            }
        }
     }
@@ -204,25 +239,18 @@ class Motor {
       if (digitalRead(pinSeta) == LOW) {
          if (!enEmergencia) { debug("!!! EMERGENCIA !!!"); parar(); enEmergencia = true; }
          return; 
-      } else {
-        if (enEmergencia) {
-          debug("Emergencia OFF.");
+      } else { 
+        if (enEmergencia) { 
+          debug("Emergencia OFF."); 
           enEmergencia = false;
           // REARME DEL ERROR DE LÍMITE
              // Si había un error de software, al soltar la seta lo limpiamos.
-          if (errorLimite || errorAtasco) {
+          if (errorLimite || errorAtasco) { 
                  errorLimite = false;
-                 errorAtasco = false;
-
-                 // SOLUCION: Resetear estado de calibración para que el botón funcione correctamente
-                 calibrando = false;
-                 pasoCalibracion = 0;
-                 midiendoTiempo = false;
-                 esperandoInicio = false;
-
-                 debug(">> REARME: Errores y calibracion limpiados.");
+                 errorAtasco = false;         
+                 debug(">> REARME: Errores limpiados.");
              }
-        }
+        } 
       }
 
       bool btnA = digitalRead(pinBtnAbrir);
@@ -253,11 +281,10 @@ class Motor {
       lastBtnCerrar = btnC;
     }
 
-    bool debeSumarTiempo() {
+   bool debeSumarTiempo() {
        if (calibrando && midiendoTiempo) return true;
-       if (!tiempoInvertido) return (sentidoGiro == 1); 
-       else return (sentidoGiro == -1); 
-    }
+       return (sentidoGiro == 1); 
+   }
 
     // Cálculo en vivo (para que la barra web se mueva suave)
     unsigned long getPosicionTiempoEstimada() {
@@ -384,9 +411,9 @@ class Motor {
     }
 
     // --- ACCIONES AUTOMÁTICAS (BLOQUEAN SI HAY ERROR) ---
-    void abrir() {
+   void abrir() {
       esperandoParadaReal = false;
-      if (enEmergencia || errorLimite) return; // BLOQUEO
+      if (enEmergencia || errorLimite) return; 
 
       if (calibrando) {
          if (modoTiempo && esperandoInicio) {
@@ -395,19 +422,35 @@ class Motor {
          }
          moviendoAutomatico = true; 
       }
-      else if (!modoTiempo) { moverA(100); return; }
+      else if (!modoTiempo) { moverA(100); return; } 
       else {
-         if (!tiempoInvertido && posicionActualTiempo >= tiempoTotalRecorrido) return;
-         if (tiempoInvertido && posicionActualTiempo == 0) return;
+         // --- MODO TIEMPO ---
+         // Lógica Pura: Abrir es ir hacia el Tiempo Total.
+         // Da igual si los cables están invertidos, matemáticamente vamos al tope.
+         
+         if (posicionActualTiempo >= tiempoTotalRecorrido) {
+             debug(">> Ignorado: Ya está ABIERTO (Tiempo).");
+             requestMqttUpdate = true;
+             return;
+         }
+         
          tiempoInicioMovimiento = millis(); moviendoAutomatico = true;
       }
-      digitalWrite(pinAbrir, HIGH); digitalWrite(pinCerrar, LOW);
-      motorEnMovimiento = true; sentidoGiro = 1; 
-    }
 
-    void cerrar() {
+      // INVERSIÓN FÍSICA (Aquí es donde cruzamos los cables si hace falta)
+      int pinFisicoActivar = (!modoTiempo || !tiempoInvertido) ? pinAbrir : pinCerrar;
+      int pinFisicoApagar  = (!modoTiempo || !tiempoInvertido) ? pinCerrar : pinAbrir;
+
+      digitalWrite(pinFisicoActivar, HIGH); 
+      digitalWrite(pinFisicoApagar, LOW);
+      
+      motorEnMovimiento = true; 
+      sentidoGiro = 1; // Matemáticamente SIEMPRE sumamos al abrir
+   }
+
+   void cerrar() {
       esperandoParadaReal = false;
-      if (enEmergencia || errorLimite) return; // BLOQUEO
+      if (enEmergencia || errorLimite) return; 
 
       if (calibrando) {
          if (modoTiempo && esperandoInicio) {
@@ -416,15 +459,30 @@ class Motor {
          }
          moviendoAutomatico = true;
       }
-      else if (!modoTiempo) { moverA(0); return; }
+      else if (!modoTiempo) { moverA(0); return; } 
       else {
-         if (!tiempoInvertido && posicionActualTiempo == 0) return;
-         if (tiempoInvertido && posicionActualTiempo >= tiempoTotalRecorrido) return;
+         // --- MODO TIEMPO ---
+         // Lógica Pura: Cerrar es ir hacia 0.
+         
+         if (posicionActualTiempo == 0) {
+             debug(">> Ignorado: Ya está CERRADO (Tiempo).");
+             requestMqttUpdate = true;
+             return;
+         }
+
          tiempoInicioMovimiento = millis(); moviendoAutomatico = true;
       }
-      digitalWrite(pinAbrir, LOW); digitalWrite(pinCerrar, HIGH);
-      motorEnMovimiento = true; sentidoGiro = -1; 
-    }
+
+      // INVERSIÓN FÍSICA
+      int pinFisicoActivar = (!modoTiempo || !tiempoInvertido) ? pinCerrar : pinAbrir;
+      int pinFisicoApagar  = (!modoTiempo || !tiempoInvertido) ? pinAbrir : pinCerrar;
+
+      digitalWrite(pinFisicoActivar, HIGH); 
+      digitalWrite(pinFisicoApagar, LOW);
+      
+      motorEnMovimiento = true; 
+      sentidoGiro = -1; // Matemáticamente SIEMPRE restamos al cerrar
+   }
 
     /*void moverA(int porcentaje) {
        esperandoParadaReal = false;
@@ -448,7 +506,62 @@ class Motor {
            motorEnMovimiento = true; sentidoGiro = 1; moviendoAutomatico = true; 
        }
     }*/
-    void moverA(int porcentaje) {
+    // Añade este método para que el Grupo pueda leer y bajar la bandera
+    bool checkMqttRequest() {
+        if (requestMqttUpdate) {
+            requestMqttUpdate = false; // La bajamos al leerla
+            return true;
+        }
+        return false;
+    }
+   void moverA(int porcentaje) {
+       esperandoParadaReal = false;
+       
+       // 1. CHEQUEO DE BLOQUEOS
+       if(modoTiempo || calibrando || enEmergencia || errorLimite || errorAtasco) { 
+           debug("Accion rechazada (Error o Estado)."); return;
+       }
+       
+       long porcentajeLim = constrain(porcentaje, 0, 100); 
+       //long porcentajeLim = porcentaje; // Permitimos >100% para pruebas si quieres
+       pulsosObjetivo = (pulsos100 * porcentajeLim) / 100;
+       long pulsosActuales = enc.getCount();
+
+       // Si estamos a menos distancia que la anticipación, consideramos que ya hemos llegado.
+       // Esto evita arranques de 0.1 segundos.
+       long distancia = abs(pulsosObjetivo - pulsosActuales);
+       if (distancia <= pulsosAnticipacion) {
+           debug(">> Mando ignorado: Ya estamos en la zona de destino (Diferencia < Anticipacion).");
+
+           requestMqttUpdate = true;
+           return; 
+       }
+
+       debug("Auto a: " + String(porcentajeLim) + "%");
+       
+       // 3. REINICIAR WATCHDOG (Importante para evitar Error Atasco falso)
+       tiempoInicioMovimiento = millis(); 
+       lastMoveTime = millis();
+       lastPosCheck = pulsosActuales;
+
+       // 4. DECIDIR DIRECCIÓN (Lógica Corregida)
+       
+       // CASO A: Estamos ABAJO y queremos SUBIR (ej: estamos en 50, vamos a 100)
+       if (pulsosActuales < pulsosObjetivo) { 
+           buscandoBajar = false; 
+           // Activamos ABRIR (Subir)
+           digitalWrite(pinAbrir, HIGH); digitalWrite(pinCerrar, LOW); 
+           motorEnMovimiento = true; sentidoGiro = 1; moviendoAutomatico = true; 
+       } 
+       // CASO B: Estamos ARRIBA y queremos BAJAR (ej: estamos en 102, vamos a 100)
+       else if (pulsosActuales > pulsosObjetivo) { 
+           buscandoBajar = true; 
+           // Activamos CERRAR (Bajar)
+           digitalWrite(pinAbrir, LOW); digitalWrite(pinCerrar, HIGH); 
+           motorEnMovimiento = true; sentidoGiro = -1; moviendoAutomatico = true; 
+       }
+    }
+    /*void moverA(int porcentaje) {
        esperandoParadaReal = false;
        
        // 1. CHEQUEO DE BLOQUEOS
@@ -489,7 +602,7 @@ class Motor {
            digitalWrite(pinAbrir, HIGH); digitalWrite(pinCerrar, LOW); 
            motorEnMovimiento = true; sentidoGiro = 1; moviendoAutomatico = true; 
        }
-    }
+    }*/
 
     // --- ACCIONES MANUALES (RESETEAN ERROR) ---
     void abrirManual() {
@@ -565,34 +678,12 @@ class Motor {
           enc.clearCount(); prefs.putLong("posEnc", 0); debug(">> Punto 0 FIJADO (Encoder)."); 
        }
     }
-    void set100() {
+    void set100() { 
        if (!calibrando) return;
-
-       // SOLUCION ERROR 1 y 2: Si el motor está en movimiento durante la calibración, pararlo primero
-       if (motorEnMovimiento) {
-          if (modoTiempo && midiendoTiempo) {
-             // En modo tiempo: calcular el tiempo total antes de parar
-             tiempoTotalRecorrido = millis() - tiempoInicioMovimiento;
-             posicionActualTiempo = tiempoTotalRecorrido;
-             midiendoTiempo = false;
-          }
-          // Parar el motor físicamente
-          digitalWrite(pinAbrir, LOW);
-          digitalWrite(pinCerrar, LOW);
-          motorEnMovimiento = false;
-          moviendoAutomatico = false;
-          sentidoGiro = 0;
-          debug(">> Motor detenido para fijar 100%");
-       }
-
-       // Ahora sí, fijar el punto 100% según el modo
-       if (!modoTiempo) {
-          pulsos100 = enc.getCount();
-          prefs.putLong("pulsos100", pulsos100);
-          debug(">> 100% FIJADO: " + String(pulsos100));
-       } else {
-          prefs.putULong("timeTotal", tiempoTotalRecorrido);
-          debug(">> 100% FIJADO: " + String(tiempoTotalRecorrido) + " ms");
+       if (!modoTiempo) { 
+          pulsos100 = enc.getCount(); prefs.putLong("pulsos100", pulsos100); debug(">> 100% FIJADO: " + String(pulsos100)); 
+       } else { 
+          prefs.putULong("timeTotal", tiempoTotalRecorrido); debug(">> 100% FIJADO: " + String(tiempoTotalRecorrido) + " ms"); 
        }
     }
     void finCalibrado() { 

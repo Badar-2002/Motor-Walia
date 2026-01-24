@@ -43,6 +43,17 @@ class GrupoMotores {
         for (auto m : motores) m->setModo(esTiempo);
     }
 
+    // Método para ver si alguien necesita actualizar MQTT
+    bool checkMqttRequest() {
+        bool algunMotorQuiere = false;
+        for (auto m : motores) {
+            // Usamos OR para que si uno quiere, devuelva true, 
+            // pero ejecutamos la función en todos para limpiar sus banderas.
+            if (m->checkMqttRequest()) algunMotorQuiere = true;
+        }
+        return algunMotorQuiere;
+    }
+
     // Comandos de calibración
     void calibrar()     { for (auto m : motores) m->calibrar(); }
     void setZero()      { for (auto m : motores) m->setZero(); }

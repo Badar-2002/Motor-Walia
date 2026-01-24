@@ -37,9 +37,11 @@ class MqttHandler {
       if (millis() - lastCheckTime > 100) {
          lastCheckTime = millis();
          
+         // 1. ¿ALGUIEN PIDE ACTUALIZACIÓN FORZOSA?
+         bool forzarUpdate = _grupoVigilado->checkMqttRequest();
          // 1. CHEQUEAR ESTADO CONSOLIDADO (El grupo decide si es "error", "abriendo", etc.)
          String estadoActual = _grupoVigilado->getEstadoString();
-         if (estadoActual != lastEstadoStr) {
+         if (forzarUpdate || estadoActual != lastEstadoStr) {
             publish(estadoActual); 
             lastEstadoStr = estadoActual;
             lastPorcentaje = -1; // Forzar reenvío de posición al cambiar estado

@@ -5,7 +5,7 @@
 //        MENSAJES DE ESTADO (Salida)
 // ==========================================
 // Estos son los textos que el PLC enviará por MQTT
-const char* MSG_EMERGENCIA    = "status emergencia";
+const char* MSG_EMERGENCIA    = "status emergency_pressed";
 const char* MSG_NO_CALIBRADO  = "status no_calibrado";
 const char* MSG_CALIBRANDO    = "status calibrando";
 const char* MSG_ABRIENDO      = "status abriendo";
