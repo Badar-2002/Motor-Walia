@@ -31,7 +31,7 @@ const char* MQTT_PASS         = "admin";
 const char* MQTT_ID_PLC       = "PLC_TARRAGONA";
 
 // Topics
-const char* MQTT_TOPIC_IN     = "/30EDA0A8CCC4/toPLC"; 
-const char* MQTT_TOPIC_OUT    = "/30EDA0A8CCC4/return";
+const char* MQTT_TOPIC_IN     = "/30EDA0A6CCC4/toPLC"; 
+const char* MQTT_TOPIC_OUT    = "/30EDA0A6CCC4/return";
 
 #endif
